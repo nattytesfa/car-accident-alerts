@@ -6,16 +6,21 @@ Real-time accident alert notification system for hospitals. An Arduino sends GPS
 
 ```
 Arduino (GPS + sensors)
-    |  Serial / USB
+    |  Serial / USB  (alerts ↑, hospital list ↓)
     v
 telegram_bridge.py        (Python)
-    |          \
-    v           v
-Telegram     endpoint.php  (PHP)
-              |            |
-              v            v
-          MySQL DB --> dashboard.php  (auto-refreshes every 10s)
+    |          \            |
+    v           v           v
+Telegram  endpoint.php  register_hospital.php
+            |            |
+            v            v
+        MySQL DB --> dashboard.php  (auto-refreshes every 10s)
 ```
+
+Hospitals register through the **Telegram bot**, are saved to MySQL, get
+**admin approval** on the dashboard, and only then does the bridge push them to
+the Arduino over serial — so it always computes the nearest hospital from
+approved live data.
 
 ## Features
 
@@ -101,13 +106,21 @@ Register an account and sign in.
 
 ### 7. Configure the Python bridge
 
-Edit the top of `telegram_bridge.py`:
+Edit the top of `telegram_bridge.py` for the serial port:
 
 ```python
 SERIAL_PORT = "/dev/ttyACM0"          # see below to find your port
-BOT_TOKEN   = "1234567890:AAHf..."    # token from BotFather
-SERVER_URL  = "http://localhost/accident-alerts/endpoint.php"
+SERVER_BASE = "http://localhost/accident-alerts"
 ```
+
+Set the bot token via an **environment variable** (it is never stored in the file):
+
+```bash
+export ACCIDENT_ALERTS_BOT_TOKEN="1234567890:AAHf..."
+```
+
+To make it persistent, add that line to `~/.bashrc` (Linux/macOS) or set it as a
+user environment variable (Windows).
 
 #### Finding your serial port
 
@@ -123,9 +136,60 @@ SERVER_URL  = "http://localhost/accident-alerts/endpoint.php"
 python3 telegram_bridge.py
 ```
 
-The script starts listening on the serial port. When the Arduino sends an alert block, it will:
-- Forward it as a Telegram message to your chat
-- Save it to the database so it appears on the web dashboard
+At startup it pushes the full hospital list (from MySQL) to the Arduino over serial.
+It then listens for Arduino alerts, forwarding each one to Telegram and saving it
+to the dashboard. It also polls the bot for commands (next step).
+
+### 9. Register hospitals via Telegram
+
+Message your bot and send:
+
+```
+/registerhospital Central General Hospital
+```
+
+The bot will ask for **latitude**, then **longitude**, then the **chat ID**
+that should receive that hospital's alerts (send `default` to use the current chat):
+
+```
+📍 Hospital <Central General Hospital>
+Send the latitude (e.g. 8.554962):
+```
+
+Once saved, the hospital is stored in MySQL as **pending** and the bot replies:
+
+> ✅ Hospital <Central General Hospital> registered ... ⏳ Waiting for **admin approval**. It will be sent to the Arduino automatically once approved.
+
+### 10. Admin approval (required before sync)
+
+A hospital is **never** pushed to the Arduino while pending. An admin must
+approve it on the dashboard first:
+
+1. Sign in with the admin account (`admin`)
+2. The **Pending Hospital Approvals** panel lists every unapproved request
+3. Click **✓ Approve** (mark approved) or **✕ Reject** (mark rejected)
+4. The bridge detects the change (checks every ~30s) and pushes the updated
+   list to the Arduino — no restart needed
+
+Rejected hospitals are kept with a `rejected` status (they never reach the
+Arduino). The dashboard shows live counts of **Approved / Pending / Rejected**
+hospitals and the "Approved Hospitals" stat reflects the registered list,
+not just hospitals that have sent alerts.
+
+The hospital's registrant is **notified on Telegram** within ~10s of the decision:
+
+> 🏥 Hospital <Muse 2 Hospital> was **approved** ✅ — It is now active for accident alert routing.
+
+Only approved hospitals appear in `hospitals_sync.php`, so pending data can
+never reach the Arduino.
+
+Other commands:
+
+| Command | Action |
+|---------|--------|
+| `/registerhospital <name>` | Start hospital registration |
+| `/hospitals` | List all **approved** hospitals |
+| `/start` | Show available commands |
 
 ## Arduino Serial Format
 
@@ -167,11 +231,44 @@ Success response:
 {"status":"ok","message":"Alert stored"}
 ```
 
+`register_hospital.php` can also be called directly over HTTP:
+
+```bash
+curl -X POST http://localhost/accident-alerts/register_hospital.php \
+  -d "name=Central+General+Hospital&lat=8.554962&lng=39.277962&chat_id=123456789"
+```
+
+## Arduino
+
+The full sketch is in `arduino/accident_alerts.ino`. It computes the nearest
+hospital at alert time using the **live** list it receives from the bridge.
+
+Live list sync format sent by the bridge over serial:
+
+```
+===HOSPITALS_START===
+H:Central General Hospital|8.554962|39.277962|123456789
+H:Adama General Hospital|8.561010|39.291380|379998469
+===HOSPITALS_END===
+```
+
+Fields per `H:` line, separated by `|`:
+
+| Field | Description |
+|-------|-------------|
+| name | Hospital name |
+| lat | Hospital latitude |
+| lng | Hospital longitude |
+| chatID | Telegram chat ID to alert for that hospital |
+
+> A small default list is compiled into the sketch so it still works with no
+> PC connected; the first bridge sync replaces it.
+
 ## Project Structure
 
 ```
 accident-alerts/
-├── setup.sql              # Database schema
+├── setup.sql              # Database schema (alerts, users, hospitals)
 ├── db.php                 # Database connection
 ├── login.php              # User login page
 ├── register.php           # Account registration
@@ -179,8 +276,15 @@ accident-alerts/
 ├── auth_check.php         # Authentication middleware
 ├── dashboard.php          # Live command center dashboard
 ├── endpoint.php           # HTTP API for receiving alerts
+├── register_hospital.php  # HTTP API for hospital registration (bot) — saves as pending
+├── approve_hospital.php   # Admin-only approve/reject + queues notification
+├── hospitals_sync.php     # HTTP API returning APPROVED hospitals (for Arduino sync)
+├── pending_notifications.php  # Unsent approve/reject notices (consumed by bridge)
+├── mark_notifications.php     # Marks notices delivered after Telegram send
 ├── styles.css             # Professional UI stylesheet
-├── telegram_bridge.py     # Arduino → Telegram + dashboard bridge
+├── telegram_bridge.py     # Arduino ↔ Telegram + dashboard bridge
+├── arduino/
+│   └── accident_alerts.ino  # Arduino firmware (live hospital list support)
 └── README.md
 ```
 
@@ -189,4 +293,4 @@ accident-alerts/
 - Passwords are hashed with `password_hash()` (bcrypt) — never stored in plain text
 - SQL queries use prepared statements to prevent injection
 - All HTML output is escaped with `htmlspecialchars()` to prevent XSS
-- Never commit `BOT_TOKEN` or MySQL passwords to a public repository
+- The Telegram bot token is read from the `ACCIDENT_ALERTS_BOT_TOKEN` environment variable — never commit it to the repository

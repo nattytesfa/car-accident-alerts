@@ -9,6 +9,22 @@ $user->bind_result($username);
 $user->fetch();
 $user->close();
 
+$isAdmin = ($username === ADMIN_USERNAME);
+
+/* Pending hospital approvals (admin only) */
+$pendingHospitals = [];
+if ($isAdmin) {
+    $ph = $conn->query("SELECT id, name, lat, lng, created_at FROM hospitals WHERE status = 'pending' ORDER BY created_at DESC");
+    while ($p = $ph->fetch_assoc()) {
+        $pendingHospitals[] = $p;
+    }
+}
+
+/* Hospital approval statistics (from the hospitals table, not alerts) */
+$approvedHospitals = (int)$conn->query("SELECT COUNT(*) AS c FROM hospitals WHERE status = 'approved'")->fetch_assoc()['c'];
+$pendingCount = (int)$conn->query("SELECT COUNT(*) AS c FROM hospitals WHERE status = 'pending'")->fetch_assoc()['c'];
+$rejectedCount = (int)$conn->query("SELECT COUNT(*) AS c FROM hospitals WHERE status = 'rejected'")->fetch_assoc()['c'];
+
 $result = $conn->query("SELECT * FROM alerts ORDER BY created_at DESC");
 $total = $result->num_rows;
 
@@ -17,7 +33,7 @@ $today = $conn->query("SELECT COUNT(*) AS c FROM alerts WHERE created_at >= '$to
 
 $recent = $conn->query("SELECT COUNT(*) AS c FROM alerts WHERE created_at >= (NOW() - INTERVAL 1 DAY)")->fetch_assoc()['c'];
 
-$hospitals = $conn->query("SELECT COUNT(DISTINCT hospital) AS c FROM alerts")->fetch_assoc()['c'];
+$distinctAlertHospitals = $conn->query("SELECT COUNT(DISTINCT hospital) AS c FROM alerts WHERE hospital IS NOT NULL AND hospital != ''")->fetch_assoc()['c'];
 
 /* Latest alert for the banner */
 $result->data_seek(0);
@@ -101,10 +117,70 @@ $maxHour = max($hours);
         <div class="stat-value grn"><?= (int)$recent ?></div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">Hospitals</div>
-        <div class="stat-value amb"><?= (int)$hospitals ?></div>
+        <div class="stat-label">Approved Hospitals</div>
+        <div class="stat-value amb"><?= $approvedHospitals ?></div>
       </div>
     </section>
+
+    <section class="stats stats-approvals">
+      <div class="stat-card stat-compact">
+        <div class="stat-label">Approved</div>
+        <div class="stat-value grn"><?= $approvedHospitals ?></div>
+      </div>
+      <div class="stat-card stat-compact">
+        <div class="stat-label">Pending Approval</div>
+        <div class="stat-value amb"><?= $pendingCount ?></div>
+      </div>
+      <div class="stat-card stat-compact">
+        <div class="stat-label">Rejected</div>
+        <div class="stat-value sec"><?= $rejectedCount ?></div>
+      </div>
+    </section>
+
+    <?php if ($isAdmin): ?>
+    <section class="table-card" id="approvals">
+      <div class="card-head">
+        <h2>Pending Hospital Approvals</h2>
+        <span class="alert-count"><?= (int)count($pendingHospitals) ?></span>
+      </div>
+      <?php if ($pendingHospitals): ?>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Hospital</th>
+              <th>Location</th>
+              <th>Requested</th>
+              <th style="text-align:right;">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <?php foreach ($pendingHospitals as $p): ?>
+            <tr>
+              <td>
+                <span class="hospital-name"><?= htmlspecialchars($p['name']) ?></span>
+                <span class="tag-new">PENDING</span>
+              </td>
+              <td>
+                <span class="coords"><?= htmlspecialchars($p['lat']) ?>, <?= htmlspecialchars($p['lng']) ?></span>
+              </td>
+              <td><?= htmlspecialchars($p['created_at']) ?></td>
+              <td style="text-align:right;">
+                <a class="btn btn-maps" href="https://maps.google.com/?q=<?= (float)$p['lat'] ?>,<?= (float)$p['lng'] ?>" target="_blank" rel="noopener">Map</a>
+                <button class="btn btn-approve" data-action="approve" data-id="<?= (int)$p['id'] ?>">✓ Approve</button>
+                <button class="btn btn-reject" data-action="reject" data-id="<?= (int)$p['id'] ?>">✕ Reject</button>
+              </td>
+            </tr>
+            <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+      <p class="panel-note" style="padding:0 1rem 1rem;">Approved hospitals are pushed to the Arduino on the next sync (a few seconds).</p>
+      <?php else: ?>
+      <div class="empty-small" style="padding:1rem 1.5rem;">No hospitals waiting for approval.</div>
+      <?php endif; ?>
+    </section>
+    <?php endif; ?>
 
     <section class="charts">
       <div class="panel">
@@ -192,6 +268,32 @@ $maxHour = max($hours);
   <footer class="footer">
     Accident Alerts Command Center · auto-refreshes every 10 seconds
   </footer>
+
+  <?php if ($isAdmin): ?>
+  <script>
+    document.querySelectorAll('#approvals [data-action]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var action = btn.dataset.action;
+        var id = btn.dataset.id;
+        btn.disabled = true;
+        btn.textContent = '...';
+        fetch('approve_hospital.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'id=' + id + '&action=' + action
+        })
+        .then(function (r) { return r.json(); })
+        .then(function (res) {
+          location.reload();
+        })
+        .catch(function () {
+          btn.disabled = false;
+          btn.textContent = '❌ Retry';
+        });
+      });
+    });
+  </script>
+  <?php endif; ?>
 
 </body>
 </html>

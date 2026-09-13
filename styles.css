@@ -142,6 +142,36 @@ a {
   background: #1e293b;
 }
 
+.btn-approve {
+  background: #059669;
+  color: #fff;
+  padding: 7px 12px;
+  font-size: 0.82rem;
+  border-radius: 7px;
+}
+
+.btn-approve:hover {
+  background: #047857;
+}
+
+.btn-reject {
+  background: #dc2626;
+  color: #fff;
+  padding: 7px 12px;
+  font-size: 0.82rem;
+  border-radius: 7px;
+}
+
+.btn-reject:hover {
+  background: #b91c1c;
+}
+
+.btn-approve:disabled,
+.btn-reject:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* ---------- Login page ---------- */
 .login-wrap {
   min-height: 100vh;
@@ -301,6 +331,15 @@ a {
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 18px;
   margin-bottom: 28px;
+}
+
+.stats-approvals {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin-top: -10px;
+}
+
+.stat-compact {
+  padding: 14px 18px;
 }
 
 .stat-card {
